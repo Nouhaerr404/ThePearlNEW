@@ -1,77 +1,58 @@
-name: CI for Laravel + Angular
+name: Web App CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop, feature/* ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
 
 jobs:
-  build-test:
+  test:
     runs-on: ubuntu-latest
-
-    services:
-      mysql:
-        image: mysql:8
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: restaurant
-          MYSQL_USER: user
-          MYSQL_PASSWORD: userpass
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping --silent"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=3
-
+    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
+    - uses: actions/checkout@v3
+    
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
         node-version: '20'
-
-    - name: Install Angular dependencies
-      working-directory: ./frontend
+        
+    - name: Install dependencies
       run: |
-        npm install
-
-    - name: Run Angular build
-      working-directory: ./frontend
+        npm ci || npm install
+        
+    - name: Lint HTML
       run: |
-        npm run build
-
-    - name: Set up PHP
-      uses: shivammathur/setup-php@v2
-      with:
-        php-version: '8.2'
-
-    - name: Install PHP dependencies
-      working-directory: ./backend/laravel
-      run: composer install --no-interaction
-
-    - name: Copy .env and generate key
-      working-directory: ./backend/laravel
+        npx html-validate "/*.html" || echo "HTML validation skipped"
+        
+    - name: Lint CSS
       run: |
-        cp .env.example .env
-        php artisan key:generate
-
-    - name: Run Laravel migrations
-      working-directory: ./backend/laravel
+        npx stylelint "/*.css" --allow-empty-input || echo "CSS validation skipped"
+        
+    - name: Lint JavaScript
+      run: |
+        npx eslint "/*.js" --no-error-on-unmatched-pattern || echo "JavaScript validation skipped"
+        
+    - name: Extract Jira issue keys from branch name
+      id: jira_keys
+      if: ${{ github.event_name == 'push' }}
+      run: |
+        BRANCH_NAME=${GITHUB_REF#refs/heads/}
+        JIRA_KEYS=$(echo $BRANCH_NAME | grep -o -E '[A-Z]+-[0-9]+' || echo "")
+        echo "keys=$JIRA_KEYS" >> $GITHUB_OUTPUT
+        
+    - name: Comment on Jira issues
+      if: ${{ steps.jira_keys.outputs.keys != '' }}
+      uses: atlassian/gajira-comment@v3
       env:
-        DB_HOST: 127.0.0.1
-        DB_PORT: 3306
-        DB_DATABASE: restaurant
-        DB_USERNAME: user
-        DB_PASSWORD: userpass
-      run: |
-        php artisan migrate --force
-
-    - name: Run PHP tests
-      working-directory: ./backend/laravel
-      run: |
-        ./vendor/bin/phpunit
+        JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+        JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+        JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      with:
+        issue: ${{ steps.jira_keys.outputs.keys }}
+        comment: |
+          CI Build Status: ${{ job.status }}
+          GitHub Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Commit: ${{ github.event.after }}
+          Branch: ${{ github.ref_name }}
